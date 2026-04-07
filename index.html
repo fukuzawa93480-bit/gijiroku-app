@@ -636,23 +636,17 @@ async function startRecording() {
     return;
   }
 
-  // マイク許可を先に取得
+  // マイク許可確認（波形は使わず、音声認識に専念させる）
   try {
     setRecStatus('connecting', 'マイク接続中...');
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // 許可確認のみ取得してすぐ解放 → 音声認識が独占使用できるようにする
+    const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    testStream.getTracks().forEach(t => t.stop());
     micPermissionGranted = true;
-
-    // 波形表示
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 1024;
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    source.connect(analyser);
-    drawWaveform();
   } catch (err) {
     setRecStatus('idle', '待機中');
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      toast('マイクへのアクセスが拒否されました。ブラウザのアドレスバー左の🔒アイコン→マイク→許可 に変更してください。', 'error');
+      toast('マイクへのアクセスが拒否されました。ブラウザのアドレスバー左の🔒アイコン → マイク → 許可 に変更してください。', 'error');
     } else {
       toast(`マイクエラー: ${err.message}`, 'error');
     }
@@ -697,33 +691,30 @@ function startRecognition() {
     updateCharCount();
   };
 
-  // エラー ─ 致命的なもの以外はUI変更しない
+  // エラー処理
   recognition.onerror = (e) => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       toast('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
       stopRecording();
     }
-    // network / no-speech / aborted などは onend で自動再起動するため無視
+    // no-speech / network / aborted は onend で自動再起動するため無視
   };
 
-  // 終了 ─ 即座にサイレント再起動（UIステータスは変えない）
+  // 終了 → 新しいインスタンスで確実に再起動（サイレント）
   recognition.onend = () => {
     if (!isRecording || isPaused) return;
     clearTimeout(restartTimer);
     restartTimer = setTimeout(() => {
-      if (!isRecording || isPaused) return;
-      try {
-        recognition.start();           // 同じインスタンスで再開を試みる
-      } catch (_) {
-        startRecognition();            // 失敗なら新インスタンスで再起動
-      }
-    }, 80);                            // 80ms だけ待つ（即時再起動だと競合するため）
+      if (isRecording && !isPaused) startRecognition();
+    }, 150);
   };
 
   try {
     recognition.start();
-    setRecStatus('active', '録音中'); // 初回のみステータス更新
-  } catch(e) { /* 無視 */ }
+    setRecStatus('active', '録音中');
+  } catch(e) {
+    toast('音声認識の起動に失敗しました。ページを再読み込みしてください。', 'error');
+  }
 }
 
 function pauseRecording() {
@@ -751,8 +742,6 @@ function stopRecording() {
   clearTimeout(restartTimer);
   if (recognition) { try { recognition.abort(); } catch(e){} recognition = null; }
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-  if (audioContext) { audioContext.close(); audioContext = null; analyser = null; }
   stopTimer();
 
   document.getElementById('btnStart').disabled = false;
@@ -906,11 +895,16 @@ Note: List action items after "---ACTIONS---" separator, one per line.
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `HTTP ${res.status}`);
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.error?.message || `HTTP ${res.status}`;
+      if (res.status === 401) throw new Error('APIキーが無効です。正しいClaude APIキー（sk-ant-...）を入力してください。');
+      if (res.status === 403) throw new Error('APIキーの権限がありません。');
+      if (res.status === 429) throw new Error('APIの利用制限に達しました。しばらく待ってから再試行してください。');
+      throw new Error(msg);
     }
 
     const data = await res.json();
+    if (!data.content || !data.content[0]) throw new Error('APIからの応答が空です。');
     const text = data.content[0].text;
 
     // Split summary and action items
