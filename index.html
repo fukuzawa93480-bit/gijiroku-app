@@ -163,6 +163,7 @@
     }
     .rec-dot.active { background: var(--danger); animation: blink 1s infinite; }
     .rec-dot.paused { background: var(--warning); }
+    .rec-dot.reconnecting { background: var(--primary); animation: blink 0.4s infinite; }
     @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
     .rec-label { font-size: 0.85rem; color: var(--text-muted); }
     .rec-timer { font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-left: auto; letter-spacing: 0.02em; }
@@ -526,6 +527,9 @@ let animFrameId = null;
 let mediaStream = null;
 let actionItems = [];
 let actionItemCounter = 0;
+let restartTimer = null;   // 再起動タイマー
+let errorCount = 0;        // 連続エラー回数
+let micPermissionGranted = false;
 
 // ============================================================
 // Init
@@ -626,17 +630,62 @@ function drawWaveform() {
 // ============================================================
 // Recording
 // ============================================================
-function startRecording() {
+async function startRecording() {
   if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
     toast('このブラウザは音声認識をサポートしていません。Chrome または Edge を使用してください。', 'error');
     return;
   }
+
+  // マイク許可を先に取得
+  try {
+    setRecStatus('connecting', 'マイク接続中...');
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micPermissionGranted = true;
+
+    // 波形表示
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    source.connect(analyser);
+    drawWaveform();
+  } catch (err) {
+    setRecStatus('idle', '待機中');
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      toast('マイクへのアクセスが拒否されました。ブラウザのアドレスバー左の🔒アイコン→マイク→許可 に変更してください。', 'error');
+    } else {
+      toast(`マイクエラー: ${err.message}`, 'error');
+    }
+    return;
+  }
+
+  isRecording = true;
+  isPaused = false;
+  errorCount = 0;
+
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnPause').disabled = false;
+  document.getElementById('btnStop').disabled = false;
+
+  startTimer();
+  startRecognition();
+  toast('録音を開始しました', 'success');
+}
+
+function startRecognition() {
+  if (!isRecording || isPaused) return;
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   recognition = new SR();
   recognition.lang = document.getElementById('recLang').value;
   recognition.continuous = true;
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    errorCount = 0;
+    setRecStatus('active', '録音中');
+  };
 
   recognition.onresult = (e) => {
     let interim = '';
@@ -654,54 +703,53 @@ function startRecording() {
   };
 
   recognition.onerror = (e) => {
-    if (e.error === 'not-allowed') toast('マイクのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
-    else if (e.error !== 'no-speech') toast(`音声認識エラー: ${e.error}`, 'error');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      toast('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
+      stopRecording();
+    } else if (e.error === 'network') {
+      errorCount++;
+      setRecStatus('reconnecting', '再接続中...');
+      // networkエラーは自動復旧（onendで再起動）
+    } else if (e.error === 'aborted') {
+      // 意図的な停止、無視
+    } else if (e.error !== 'no-speech') {
+      errorCount++;
+      setRecStatus('reconnecting', `エラー(${e.error})再接続中...`);
+    }
   };
 
   recognition.onend = () => {
-    if (isRecording && !isPaused) recognition.start(); // auto-restart
+    if (!isRecording || isPaused) return;
+    // 連続エラー時は少し待ってから再起動
+    const delay = errorCount > 3 ? 2000 : errorCount > 0 ? 800 : 200;
+    setRecStatus('reconnecting', '再接続中...');
+    clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => {
+      if (isRecording && !isPaused) startRecognition();
+    }, delay);
   };
 
-  // Request mic for waveform
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    mediaStream = stream;
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 1024;
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(analyser);
-    drawWaveform();
-  }).catch(() => { /* waveform not available */ });
-
-  recognition.start();
-  isRecording = true;
-  isPaused = false;
-
-  document.getElementById('btnStart').disabled = true;
-  document.getElementById('btnPause').disabled = false;
-  document.getElementById('btnStop').disabled = false;
-  document.getElementById('recDot').className = 'rec-dot active';
-  document.getElementById('recLabel').textContent = '録音中';
-
-  startTimer();
-  toast('録音を開始しました', 'success');
+  try {
+    recognition.start();
+  } catch(e) {
+    // すでに起動中の場合は無視
+  }
 }
 
 function pauseRecording() {
   if (!isRecording) return;
   if (!isPaused) {
     isPaused = true;
-    recognition.stop();
+    clearTimeout(restartTimer);
+    if (recognition) { try { recognition.stop(); } catch(e){} }
     stopTimer();
-    document.getElementById('recDot').className = 'rec-dot paused';
-    document.getElementById('recLabel').textContent = '一時停止中';
+    setRecStatus('paused', '一時停止中');
     document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> 再開`;
   } else {
     isPaused = false;
-    recognition.start();
+    errorCount = 0;
     startTimer();
-    document.getElementById('recDot').className = 'rec-dot active';
-    document.getElementById('recLabel').textContent = '録音中';
+    startRecognition();
     document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
   }
 }
@@ -710,22 +758,30 @@ function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   isPaused = false;
-  if (recognition) recognition.stop();
-  if (animFrameId) cancelAnimationFrame(animFrameId);
-  if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
-  if (audioContext) audioContext.close();
+  clearTimeout(restartTimer);
+  if (recognition) { try { recognition.abort(); } catch(e){} recognition = null; }
+  if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; analyser = null; }
   stopTimer();
 
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnPause').disabled = true;
   document.getElementById('btnStop').disabled = true;
-  document.getElementById('recDot').className = 'rec-dot';
-  document.getElementById('recLabel').textContent = '録音完了';
-  document.getElementById('interimText').textContent = '';
   document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
+  document.getElementById('interimText').textContent = '';
+  setRecStatus('done', '録音完了');
   drawIdleWaveform();
   toast('録音を停止しました', 'success');
   updateCharCount();
+}
+
+// ステータス表示ヘルパー
+function setRecStatus(state, label) {
+  const dot = document.getElementById('recDot');
+  const lbl = document.getElementById('recLabel');
+  dot.className = 'rec-dot' + (state === 'active' ? ' active' : state === 'paused' ? ' paused' : state === 'reconnecting' ? ' reconnecting' : '');
+  lbl.textContent = label;
 }
 
 function updateTranscriptArea() {
@@ -734,9 +790,10 @@ function updateTranscriptArea() {
 }
 
 // ============================================================
-// Timer
+// Timer  ※ 二重起動防止付き
 // ============================================================
 function startTimer() {
+  if (timerInterval) return;  // 既に動作中なら何もしない
   timerInterval = setInterval(() => {
     elapsedSeconds++;
     const h = String(Math.floor(elapsedSeconds / 3600)).padStart(2,'0');
@@ -745,7 +802,7 @@ function startTimer() {
     document.getElementById('recTimer').textContent = `${h}:${m}:${s}`;
   }, 1000);
 }
-function stopTimer() { clearInterval(timerInterval); }
+function stopTimer() { clearInterval(timerInterval); timerInterval = null; }
 
 // ============================================================
 // Transcript utils
