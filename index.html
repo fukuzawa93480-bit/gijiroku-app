@@ -682,58 +682,48 @@ function startRecognition() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
 
-  recognition.onstart = () => {
-    errorCount = 0;
-    setRecStatus('active', '録音中');
-  };
-
+  // 結果受信 ─ UIは変えない
   recognition.onresult = (e) => {
-    let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i].transcript;
       if (e.results[i].isFinal) {
         finalTranscript += t;
         updateTranscriptArea();
+        document.getElementById('interimText').textContent = '';
       } else {
-        interim += t;
+        document.getElementById('interimText').textContent = `▶ ${t}`;
       }
     }
-    document.getElementById('interimText').textContent = interim ? `▶ ${interim}` : '';
     updateCharCount();
   };
 
+  // エラー ─ 致命的なもの以外はUI変更しない
   recognition.onerror = (e) => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       toast('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
       stopRecording();
-    } else if (e.error === 'network') {
-      errorCount++;
-      setRecStatus('reconnecting', '再接続中...');
-      // networkエラーは自動復旧（onendで再起動）
-    } else if (e.error === 'aborted') {
-      // 意図的な停止、無視
-    } else if (e.error !== 'no-speech') {
-      errorCount++;
-      setRecStatus('reconnecting', `エラー(${e.error})再接続中...`);
     }
+    // network / no-speech / aborted などは onend で自動再起動するため無視
   };
 
+  // 終了 ─ 即座にサイレント再起動（UIステータスは変えない）
   recognition.onend = () => {
     if (!isRecording || isPaused) return;
-    // 連続エラー時は少し待ってから再起動
-    const delay = errorCount > 3 ? 2000 : errorCount > 0 ? 800 : 200;
-    setRecStatus('reconnecting', '再接続中...');
     clearTimeout(restartTimer);
     restartTimer = setTimeout(() => {
-      if (isRecording && !isPaused) startRecognition();
-    }, delay);
+      if (!isRecording || isPaused) return;
+      try {
+        recognition.start();           // 同じインスタンスで再開を試みる
+      } catch (_) {
+        startRecognition();            // 失敗なら新インスタンスで再起動
+      }
+    }, 80);                            // 80ms だけ待つ（即時再起動だと競合するため）
   };
 
   try {
     recognition.start();
-  } catch(e) {
-    // すでに起動中の場合は無視
-  }
+    setRecStatus('active', '録音中'); // 初回のみステータス更新
+  } catch(e) { /* 無視 */ }
 }
 
 function pauseRecording() {
