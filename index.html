@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>議事録アプリ</title>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <style>
+    :root {
+      --bg: #f0f4f8;
+      --surface: #ffffff;
+      --surface2: #f8fafc;
+      --border: #e2e8f0;
+      --primary: #3b82f6;
+      --primary-dark: #2563eb;
+      --danger: #ef4444;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06);
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    /* Header */
+    header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+      color: white;
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+    header span { font-size: 0.85rem; opacity: 0.75; margin-left: 4px; }
+
+    /* Layout */
+    .app { display: grid; grid-template-columns: 320px 1fr; gap: 20px; padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+    @media (max-width: 900px) { .app { grid-template-columns: 1fr; padding: 16px; } }
+
+    /* Card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-header {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 18px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-body { padding: 18px; }
+
+    /* Left sidebar */
+    .sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+    /* Form fields */
+    label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; }
+    input[type="text"], input[type="date"], textarea, select {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      color: var(--text);
+      background: var(--surface);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+    }
+    textarea { resize: vertical; min-height: 72px; }
+    .field { margin-bottom: 14px; }
+    .field:last-child { margin-bottom: 0; }
+
+    /* API Key field */
+    .api-key-wrapper { position: relative; }
+    .api-key-wrapper input { padding-right: 40px; font-family: monospace; font-size: 0.82rem; }
+    .api-key-toggle {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 1rem; padding: 2px;
+    }
+
+    /* Main content */
+    .main { display: flex; flex-direction: column; gap: 16px; }
+
+    /* Recording section */
+    .recording-controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover:not(:disabled) { background: #dc2626; }
+    .btn-success { background: var(--success); color: white; }
+    .btn-success:hover:not(:disabled) { background: #16a34a; }
+    .btn-warning { background: var(--warning); color: white; }
+    .btn-warning:hover:not(:disabled) { background: #d97706; }
+    .btn-outline {
+      background: transparent;
+      border: 1.5px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover:not(:disabled) { background: var(--surface2); border-color: #cbd5e1; }
+    .btn-sm { padding: 7px 14px; font-size: 0.82rem; }
+
+    /* Recording status */
+    .rec-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      background: var(--surface2);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      flex: 1;
+    }
+    .rec-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #cbd5e1;
+      flex-shrink: 0;
+    }
+    .rec-dot.active { background: var(--danger); animation: blink 1s infinite; }
+    .rec-dot.paused { background: var(--warning); }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .rec-label { font-size: 0.85rem; color: var(--text-muted); }
+    .rec-timer { font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-left: auto; letter-spacing: 0.02em; }
+
+    /* Waveform */
+    #waveform {
+      width: 100%;
+      height: 48px;
+      border-radius: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+    }
+
+    /* Transcript area */
+    #transcript {
+      min-height: 200px;
+      max-height: 360px;
+      overflow-y: auto;
+      font-size: 0.95rem;
+      line-height: 1.8;
+      background: var(--surface);
+    }
+    .interim { color: #94a3b8; font-style: italic; }
+    .transcript-toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* Summary */
+    #summaryOutput {
+      min-height: 120px;
+      font-size: 0.92rem;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+    .summary-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* Action items */
+    #actionItems { min-height: 60px; }
+    .action-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--surface2);
+      border-radius: 7px;
+      margin-bottom: 7px;
+      font-size: 0.88rem;
+      border-left: 3px solid var(--primary);
+    }
+    .action-item input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; }
+    .action-item label { font-weight: normal; color: var(--text); margin: 0; cursor: pointer; }
+    .action-item.done label { text-decoration: line-through; color: var(--text-muted); }
+
+    /* Export section */
+    .export-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .export-preview {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      padding: 6px 12px;
+      background: var(--surface2);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+
+    /* Status toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      box-shadow: var(--shadow-md);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.25s;
+      pointer-events: none;
+      z-index: 9999;
+      max-width: 320px;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.success { background: #15803d; }
+    #toast.error { background: #b91c1c; }
+    #toast.warning { background: #b45309; }
+
+    /* Spinner */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    /* Divider */
+    hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+    /* Language badge */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-blue { background: #dbeafe; color: #1d4ed8; }
+    .badge-green { background: #dcfce7; color: #15803d; }
+    .badge-orange { background: #ffedd5; color: #c2410c; }
+
+    /* Info box */
+    .info-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.83rem;
+      color: #1d4ed8;
+      line-height: 1.5;
+    }
+    .info-box.warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10 9 9 9 8 9"/>
+  </svg>
+  <h1>議事録アプリ</h1>
+  <span>録音 / 文字起こし / 要約 / Excel出力</span>
+</header>
+
+<div class="app">
+
+  <!-- LEFT SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- Meeting Info -->
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        会議情報
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label>会議名 *</label>
+          <input type="text" id="meetingTitle" placeholder="例：週次定例ミーティング" />
+        </div>
+        <div class="field">
+          <label>開催日</label>
+          <input type="date" id="meetingDate" />
+        </div>
+        <div class="field">
+          <label>開始時刻</label>
+          <input type="text" id="meetingTime" placeholder="例：14:00" />
+        </div>
+        <div class="field">
+          <label>場所</label>
+          <input type="text" id="meetingLocation" placeholder="例：会議室A / Zoom" />
+        </div>
+        <div class="field">
+          <label>参加者</label>
+          <textarea id="meetingAttendees" placeholder="例：山田太郎、鈴木花子、田中一郎" rows="2"></textarea>
+        </div>
+        <div class="field">
+          <label>議題</label>
+          <textarea id="meetingAgenda" placeholder="例：&#10;1. 先週の進捗報告&#10;2. 今週の課題確認" rows="3"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Settings -->
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+        AI設定 (要約用)
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label>Claude API キー</label>
+          <div class="api-key-wrapper">
+            <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" />
+            <button class="api-key-toggle" onclick="toggleApiKey()" title="表示/非表示">👁</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>要約言語</label>
+          <select id="summaryLang">
+            <option value="ja">日本語</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <div class="info-box">
+          APIキーは端末内のみに保存されます。外部には送信されません（要約実行時を除く）。
+        </div>
+      </div>
+    </div>
+
+    <!-- Export -->
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        エクスポート
+      </div>
+      <div class="card-body">
+        <div class="export-row">
+          <button class="btn btn-success" onclick="exportExcel()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            Excel出力
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="clearAll()">クリア</button>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="export-preview" id="exportPreview">出力内容：会議情報・文字起こし・要約・アクションアイテム</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="main">
+
+    <!-- Recording -->
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        録音 / 文字起こし
+        <span class="badge badge-blue" id="langBadge">日本語</span>
+      </div>
+      <div class="card-body">
+
+        <!-- Language + controls -->
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;">
+          <label style="margin:0; white-space:nowrap;">認識言語:</label>
+          <select id="recLang" style="width:auto; flex:0 0 auto;" onchange="updateLang()">
+            <option value="ja-JP">日本語</option>
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="zh-CN">中文（简体）</option>
+            <option value="ko-KR">한국어</option>
+          </select>
+        </div>
+
+        <div class="recording-controls">
+          <button class="btn btn-primary" id="btnStart" onclick="startRecording()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
+            録音開始
+          </button>
+          <button class="btn btn-warning" id="btnPause" onclick="pauseRecording()" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            一時停止
+          </button>
+          <button class="btn btn-danger" id="btnStop" onclick="stopRecording()" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+            停止
+          </button>
+          <div class="rec-status" style="flex:1; min-width:180px;">
+            <div class="rec-dot" id="recDot"></div>
+            <span class="rec-label" id="recLabel">待機中</span>
+            <span class="rec-timer" id="recTimer">00:00:00</span>
+          </div>
+        </div>
+
+        <canvas id="waveform" style="margin-top:12px;"></canvas>
+
+        <hr/>
+
+        <!-- Transcript toolbar -->
+        <div class="transcript-toolbar">
+          <span style="font-size:0.85rem; font-weight:600; color:var(--text-muted);">文字起こし</span>
+          <button class="btn btn-outline btn-sm" onclick="clearTranscript()">クリア</button>
+          <button class="btn btn-outline btn-sm" onclick="copyTranscript()">コピー</button>
+          <span id="charCount" style="font-size:0.8rem; color:var(--text-muted); margin-left:auto;"></span>
+        </div>
+        <textarea id="transcript" class="card-body" style="width:100%; min-height:200px; max-height:360px; resize:vertical; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:0.95rem; line-height:1.8; font-family:inherit;" placeholder="録音を開始すると文字起こしがここに表示されます。&#10;&#10;手動で入力・編集することもできます。"></textarea>
+        <div id="interimText" style="font-size:0.88rem; color:#94a3b8; font-style:italic; margin-top:6px; min-height:20px;"></div>
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        AI 要約
+        <span class="badge badge-green" id="modelBadge">claude-sonnet-4-6</span>
+      </div>
+      <div class="card-body">
+        <div class="summary-meta">
+          <button class="btn btn-primary" id="btnSummarize" onclick="summarize()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            要約を生成
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="clearSummary()">クリア</button>
+          <div class="info-box warn" style="flex:1; font-size:0.78rem;" id="apiKeyHint">
+            ← Claude APIキーを設定してください
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label>要約結果</label>
+          <textarea id="summaryOutput" style="width:100%; min-height:120px; resize:vertical; border:1px solid var(--border); border-radius:8px; padding:12px; font-size:0.92rem; line-height:1.8; font-family:inherit; background:var(--surface);" placeholder="「要約を生成」ボタンを押すとAIが議事録の要約を作成します。"></textarea>
+        </div>
+
+        <hr/>
+
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+            <label style="margin:0;">アクションアイテム</label>
+            <button class="btn btn-outline btn-sm" onclick="addActionItem()">+ 追加</button>
+          </div>
+          <div id="actionItems">
+            <div style="color:var(--text-muted); font-size:0.85rem;">要約生成後にアクションアイテムが表示されます。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let recognition = null;
+let isRecording = false;
+let isPaused = false;
+let timerInterval = null;
+let elapsedSeconds = 0;
+let finalTranscript = '';
+let audioContext = null;
+let analyser = null;
+let animFrameId = null;
+let mediaStream = null;
+let actionItems = [];
+let actionItemCounter = 0;
+
+// ============================================================
+// Init
+// ============================================================
+window.addEventListener('DOMContentLoaded', () => {
+  // Set today's date
+  document.getElementById('meetingDate').value = new Date().toISOString().split('T')[0];
+  // Set current time
+  const now = new Date();
+  document.getElementById('meetingTime').value = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  // Load saved API key
+  const saved = localStorage.getItem('claudeApiKey');
+  if (saved) { document.getElementById('apiKey').value = saved; checkApiKey(); }
+  // API key listener
+  document.getElementById('apiKey').addEventListener('input', () => {
+    localStorage.setItem('claudeApiKey', document.getElementById('apiKey').value);
+    checkApiKey();
+  });
+  // Char counter
+  document.getElementById('transcript').addEventListener('input', updateCharCount);
+  // Init waveform
+  drawIdleWaveform();
+});
+
+function checkApiKey() {
+  const key = document.getElementById('apiKey').value.trim();
+  const hint = document.getElementById('apiKeyHint');
+  if (key) {
+    hint.style.display = 'none';
+  } else {
+    hint.style.display = '';
+  }
+}
+
+function toggleApiKey() {
+  const inp = document.getElementById('apiKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function updateCharCount() {
+  const t = document.getElementById('transcript').value;
+  document.getElementById('charCount').textContent = `${t.length} 文字`;
+}
+
+function updateLang() {
+  const lang = document.getElementById('recLang').value;
+  const labels = {'ja-JP':'日本語','en-US':'English','en-GB':'English','zh-CN':'中文','ko-KR':'한국어'};
+  document.getElementById('langBadge').textContent = labels[lang] || lang;
+}
+
+// ============================================================
+// Waveform
+// ============================================================
+function drawIdleWaveform() {
+  const canvas = document.getElementById('waveform');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth || 600;
+  canvas.height = 48;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, canvas.height / 2);
+  ctx.lineTo(canvas.width, canvas.height / 2);
+  ctx.stroke();
+}
+
+function drawWaveform() {
+  if (!analyser) return;
+  const canvas = document.getElementById('waveform');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth || 600;
+  const bufLen = analyser.frequencyBinCount;
+  const dataArr = new Uint8Array(bufLen);
+  function draw() {
+    animFrameId = requestAnimationFrame(draw);
+    analyser.getByteTimeDomainData(dataArr);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = isRecording && !isPaused ? '#3b82f6' : '#94a3b8';
+    ctx.beginPath();
+    const sliceWidth = canvas.width / bufLen;
+    let x = 0;
+    for (let i = 0; i < bufLen; i++) {
+      const v = dataArr[i] / 128.0;
+      const y = (v * canvas.height) / 2;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+  }
+  draw();
+}
+
+// ============================================================
+// Recording
+// ============================================================
+function startRecording() {
+  if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
+    toast('このブラウザは音声認識をサポートしていません。Chrome または Edge を使用してください。', 'error');
+    return;
+  }
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.lang = document.getElementById('recLang').value;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i].transcript;
+      if (e.results[i].isFinal) {
+        finalTranscript += t;
+        updateTranscriptArea();
+      } else {
+        interim += t;
+      }
+    }
+    document.getElementById('interimText').textContent = interim ? `▶ ${interim}` : '';
+    updateCharCount();
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'not-allowed') toast('マイクのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
+    else if (e.error !== 'no-speech') toast(`音声認識エラー: ${e.error}`, 'error');
+  };
+
+  recognition.onend = () => {
+    if (isRecording && !isPaused) recognition.start(); // auto-restart
+  };
+
+  // Request mic for waveform
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    mediaStream = stream;
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    const source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+    drawWaveform();
+  }).catch(() => { /* waveform not available */ });
+
+  recognition.start();
+  isRecording = true;
+  isPaused = false;
+
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnPause').disabled = false;
+  document.getElementById('btnStop').disabled = false;
+  document.getElementById('recDot').className = 'rec-dot active';
+  document.getElementById('recLabel').textContent = '録音中';
+
+  startTimer();
+  toast('録音を開始しました', 'success');
+}
+
+function pauseRecording() {
+  if (!isRecording) return;
+  if (!isPaused) {
+    isPaused = true;
+    recognition.stop();
+    stopTimer();
+    document.getElementById('recDot').className = 'rec-dot paused';
+    document.getElementById('recLabel').textContent = '一時停止中';
+    document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> 再開`;
+  } else {
+    isPaused = false;
+    recognition.start();
+    startTimer();
+    document.getElementById('recDot').className = 'rec-dot active';
+    document.getElementById('recLabel').textContent = '録音中';
+    document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
+  }
+}
+
+function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  isPaused = false;
+  if (recognition) recognition.stop();
+  if (animFrameId) cancelAnimationFrame(animFrameId);
+  if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+  if (audioContext) audioContext.close();
+  stopTimer();
+
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnPause').disabled = true;
+  document.getElementById('btnStop').disabled = true;
+  document.getElementById('recDot').className = 'rec-dot';
+  document.getElementById('recLabel').textContent = '録音完了';
+  document.getElementById('interimText').textContent = '';
+  document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
+  drawIdleWaveform();
+  toast('録音を停止しました', 'success');
+  updateCharCount();
+}
+
+function updateTranscriptArea() {
+  const area = document.getElementById('transcript');
+  area.value = finalTranscript;
+}
+
+// ============================================================
+// Timer
+// ============================================================
+function startTimer() {
+  timerInterval = setInterval(() => {
+    elapsedSeconds++;
+    const h = String(Math.floor(elapsedSeconds / 3600)).padStart(2,'0');
+    const m = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2,'0');
+    const s = String(elapsedSeconds % 60).padStart(2,'0');
+    document.getElementById('recTimer').textContent = `${h}:${m}:${s}`;
+  }, 1000);
+}
+function stopTimer() { clearInterval(timerInterval); }
+
+// ============================================================
+// Transcript utils
+// ============================================================
+function clearTranscript() {
+  if (!confirm('文字起こしをクリアしますか？')) return;
+  finalTranscript = '';
+  document.getElementById('transcript').value = '';
+  document.getElementById('interimText').textContent = '';
+  updateCharCount();
+  toast('文字起こしをクリアしました');
+}
+function copyTranscript() {
+  const t = document.getElementById('transcript').value;
+  if (!t) { toast('コピーするテキストがありません', 'warning'); return; }
+  navigator.clipboard.writeText(t).then(() => toast('クリップボードにコピーしました', 'success'));
+}
+
+// ============================================================
+// Summarize via Claude API
+// ============================================================
+async function summarize() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) { toast('Claude APIキーを入力してください', 'error'); return; }
+
+  const transcript = document.getElementById('transcript').value.trim();
+  if (!transcript) { toast('文字起こしが空です。録音または手動入力してください', 'warning'); return; }
+
+  const lang = document.getElementById('summaryLang').value;
+  const title = document.getElementById('meetingTitle').value || '（無題）';
+  const attendees = document.getElementById('meetingAttendees').value || '';
+  const agenda = document.getElementById('meetingAgenda').value || '';
+
+  const btn = document.getElementById('btnSummarize');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span> 生成中...`;
+
+  const systemPrompt = lang === 'ja'
+    ? `あなたは議事録作成の専門家です。会議の文字起こしから、簡潔で分かりやすい議事録を作成してください。`
+    : `You are an expert meeting notes writer. Create concise and clear meeting minutes from the transcript.`;
+
+  const userPrompt = lang === 'ja'
+    ? `以下の会議の文字起こしを基に、議事録を作成してください。
+
+会議名: ${title}
+参加者: ${attendees}
+議題: ${agenda}
+
+【文字起こし】
+${transcript}
+
+以下の形式で出力してください：
+
+## 会議サマリー
+（3〜5文で会議全体の要点をまとめてください）
+
+## 決定事項
+・（箇条書きで決定した内容を記載）
+
+## 議論のポイント
+・（主要な議論点を箇条書きで記載）
+
+## アクションアイテム
+・（担当者）：（タスク内容）（期限があれば記載）
+※ アクションアイテムは「---ACTIONS---」の区切りの後に1行ずつ記載してください
+
+---ACTIONS---
+（担当者名）：（タスク内容）`
+    : `Create meeting minutes from the following transcript.
+
+Meeting: ${title}
+Attendees: ${attendees}
+Agenda: ${agenda}
+
+[Transcript]
+${transcript}
+
+Output in this format:
+
+## Summary
+(3-5 sentences summarizing the meeting)
+
+## Decisions
+- (bullet points)
+
+## Key Discussion Points
+- (bullet points)
+
+## Action Items
+- (Owner): (Task) (Deadline if mentioned)
+Note: List action items after "---ACTIONS---" separator, one per line.
+
+---ACTIONS---
+(Owner): (Task)`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-calls': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    const text = data.content[0].text;
+
+    // Split summary and action items
+    const parts = text.split('---ACTIONS---');
+    const summaryText = parts[0].trim();
+    document.getElementById('summaryOutput').value = summaryText;
+
+    // Parse action items
+    if (parts[1]) {
+      const lines = parts[1].trim().split('\n').filter(l => l.trim());
+      actionItems = [];
+      lines.forEach(line => {
+        const clean = line.replace(/^[-・•]\s*/, '').trim();
+        if (clean) addActionItemData(clean);
+      });
+      renderActionItems();
+    }
+
+    toast('要約を生成しました', 'success');
+  } catch (e) {
+    toast(`エラー: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> 要約を生成`;
+  }
+}
+
+function clearSummary() {
+  document.getElementById('summaryOutput').value = '';
+  actionItems = [];
+  renderActionItems();
+}
+
+// ============================================================
+// Action Items
+// ============================================================
+function addActionItemData(text, done = false) {
+  actionItems.push({ id: ++actionItemCounter, text, done });
+}
+
+function addActionItem() {
+  const text = prompt('アクションアイテムを入力してください:');
+  if (!text || !text.trim()) return;
+  addActionItemData(text.trim());
+  renderActionItems();
+}
+
+function renderActionItems() {
+  const container = document.getElementById('actionItems');
+  if (!actionItems.length) {
+    container.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">アクションアイテムがありません</div>';
+    return;
+  }
+  container.innerHTML = actionItems.map(item => `
+    <div class="action-item ${item.done ? 'done' : ''}" id="ai-${item.id}">
+      <input type="checkbox" id="chk-${item.id}" ${item.done ? 'checked' : ''} onchange="toggleAction(${item.id})" />
+      <label for="chk-${item.id}">${escHtml(item.text)}</label>
+      <button onclick="removeAction(${item.id})" style="margin-left:auto; background:none; border:none; cursor:pointer; color:#94a3b8; font-size:1rem; flex-shrink:0;" title="削除">×</button>
+    </div>
+  `).join('');
+}
+
+function toggleAction(id) {
+  const item = actionItems.find(a => a.id === id);
+  if (item) { item.done = !item.done; renderActionItems(); }
+}
+
+function removeAction(id) {
+  actionItems = actionItems.filter(a => a.id !== id);
+  renderActionItems();
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ============================================================
+// Excel Export
+// ============================================================
+function exportExcel() {
+  const title = document.getElementById('meetingTitle').value || '議事録';
+  const date = document.getElementById('meetingDate').value || new Date().toISOString().split('T')[0];
+  const time = document.getElementById('meetingTime').value || '';
+  const location = document.getElementById('meetingLocation').value || '';
+  const attendees = document.getElementById('meetingAttendees').value || '';
+  const agenda = document.getElementById('meetingAgenda').value || '';
+  const transcript = document.getElementById('transcript').value || '';
+  const summary = document.getElementById('summaryOutput').value || '';
+
+  const wb = XLSX.utils.book_new();
+
+  // ---- Sheet 1: 議事録概要 ----
+  const s1data = [
+    ['議事録', '', '', ''],
+    ['', '', '', ''],
+    ['会議名', title, '', ''],
+    ['開催日', date, '', ''],
+    ['開始時刻', time, '', ''],
+    ['場所', location, '', ''],
+    ['参加者', attendees, '', ''],
+    ['', '', '', ''],
+    ['【議題】', '', '', ''],
+    [agenda, '', '', ''],
+    ['', '', '', ''],
+    ['【会議サマリー・要約】', '', '', ''],
+    [summary, '', '', ''],
+    ['', '', '', ''],
+  ];
+
+  if (actionItems.length) {
+    s1data.push(['【アクションアイテム】', '', '', '']);
+    s1data.push(['No.', '内容', 'ステータス', '']);
+    actionItems.forEach((item, i) => {
+      s1data.push([i + 1, item.text, item.done ? '完了' : '未対応', '']);
+    });
+    s1data.push(['', '', '', '']);
+  }
+
+  s1data.push(['作成日時', new Date().toLocaleString('ja-JP'), '', '']);
+
+  const ws1 = XLSX.utils.aoa_to_sheet(s1data);
+
+  // Column widths
+  ws1['!cols'] = [{ wch: 14 }, { wch: 60 }, { wch: 12 }, { wch: 12 }];
+
+  // Row heights for wrapped text rows
+  ws1['!rows'] = s1data.map((row, i) => {
+    const longestCell = Math.max(...row.map(c => String(c || '').length));
+    return { hpx: longestCell > 50 ? 80 : 20 };
+  });
+
+  // Merge title row
+  ws1['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
+  ];
+
+  // Style title cell
+  if (ws1['A1']) ws1['A1'].s = { font: { bold: true, sz: 18 }, alignment: { horizontal: 'center' } };
+
+  XLSX.utils.book_append_sheet(wb, ws1, '議事録概要');
+
+  // ---- Sheet 2: 文字起こし ----
+  const s2data = [
+    ['文字起こし全文'],
+    ['会議名', title],
+    ['日時', `${date} ${time}`],
+    [''],
+    [transcript]
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(s2data);
+  ws2['!cols'] = [{ wch: 14 }, { wch: 80 }];
+  ws2['!rows'] = [{ hpx: 22 }, { hpx: 20 }, { hpx: 20 }, { hpx: 10 }, { hpx: Math.max(60, Math.ceil(transcript.length / 60) * 16) }];
+  XLSX.utils.book_append_sheet(wb, ws2, '文字起こし');
+
+  // ---- Sheet 3: アクションアイテム ----
+  if (actionItems.length) {
+    const s3data = [
+      ['アクションアイテム一覧'],
+      ['会議名', title],
+      [''],
+      ['No.', '内容', 'ステータス', ''],
+      ...actionItems.map((item, i) => [i + 1, item.text, item.done ? '完了' : '未対応', ''])
+    ];
+    const ws3 = XLSX.utils.aoa_to_sheet(s3data);
+    ws3['!cols'] = [{ wch: 6 }, { wch: 60 }, { wch: 12 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws3, 'アクションアイテム');
+  }
+
+  // Generate filename
+  const dateStr = date.replace(/-/g, '');
+  const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').substring(0, 30);
+  const filename = `議事録_${safeTitle}_${dateStr}.xlsx`;
+
+  XLSX.writeFile(wb, filename);
+  toast(`「${filename}」を出力しました`, 'success');
+}
+
+// ============================================================
+// Clear All
+// ============================================================
+function clearAll() {
+  if (!confirm('すべてのデータをクリアしますか？')) return;
+  finalTranscript = '';
+  document.getElementById('transcript').value = '';
+  document.getElementById('interimText').textContent = '';
+  document.getElementById('summaryOutput').value = '';
+  actionItems = [];
+  renderActionItems();
+  elapsedSeconds = 0;
+  document.getElementById('recTimer').textContent = '00:00:00';
+  document.getElementById('recLabel').textContent = '待機中';
+  document.getElementById('recDot').className = 'rec-dot';
+  updateCharCount();
+  toast('クリアしました');
+}
+
+// ============================================================
+// Toast
+// ============================================================
+let toastTimeout;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => { el.className = ''; }, 3000);
+}
+
+// ============================================================
+// Window resize - redraw waveform
+// ============================================================
+window.addEventListener('resize', () => {
+  if (!isRecording) drawIdleWaveform();
+});
+</script>
+</body>
+</html>
