@@ -366,9 +366,9 @@
       </div>
       <div class="card-body">
         <div class="field">
-          <label>Claude API キー</label>
+          <label>Gemini API キー</label>
           <div class="api-key-wrapper">
-            <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" />
+            <input type="password" id="apiKey" placeholder="AIza..." autocomplete="off" />
             <button class="api-key-toggle" onclick="toggleApiKey()" title="表示/非表示">👁</button>
           </div>
         </div>
@@ -380,7 +380,7 @@
           </select>
         </div>
         <div class="info-box">
-          APIキーは端末内のみに保存されます。外部には送信されません（要約実行時を除く）。
+          APIキーは端末内のみに保存されます。文字起こし・要約実行時のみGeminiに送信されます。
         </div>
       </div>
     </div>
@@ -472,7 +472,7 @@
       <div class="card-header">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         AI 要約
-        <span class="badge badge-green" id="modelBadge">claude-sonnet-4-6</span>
+        <span class="badge badge-green" id="modelBadge">gemini-2.5-flash</span>
       </div>
       <div class="card-body">
         <div class="summary-meta">
@@ -482,7 +482,7 @@
           </button>
           <button class="btn btn-outline btn-sm" onclick="clearSummary()">クリア</button>
           <div class="info-box warn" style="flex:1; font-size:0.78rem;" id="apiKeyHint">
-            ← Claude APIキーを設定してください
+            ← Gemini APIキーを設定してください
           </div>
         </div>
 
@@ -515,7 +515,8 @@
 // ============================================================
 // State
 // ============================================================
-let recognition = null;
+let mediaRecorder = null;
+let audioChunks = [];
 let isRecording = false;
 let isPaused = false;
 let timerInterval = null;
@@ -527,14 +528,23 @@ let animFrameId = null;
 let mediaStream = null;
 let actionItems = [];
 let actionItemCounter = 0;
-let restartTimer = null;   // 再起動タイマー
-let errorCount = 0;        // 連続エラー回数
-let micPermissionGranted = false;
+let isTranscribing = false;
 
 // ============================================================
 // Init
 // ============================================================
 window.addEventListener('DOMContentLoaded', () => {
+  // file:// プロトコル検出
+  if (location.protocol === 'file:') {
+    const warn = document.createElement('div');
+    warn.className = 'info-box warn';
+    warn.style.cssText = 'margin:0 0 14px; font-size:0.88rem; line-height:1.6;';
+    warn.innerHTML = `<strong>⚠ マイクが使えません</strong><br>
+      <code>start-server.bat</code> をダブルクリックして起動し、自動で開くブラウザ画面をお使いください。`;
+    const recCard = document.querySelector('.main .card .card-body');
+    if (recCard) recCard.insertBefore(warn, recCard.firstChild);
+  }
+
   // Set today's date
   document.getElementById('meetingDate').value = new Date().toISOString().split('T')[0];
   // Set current time
@@ -628,109 +638,86 @@ function drawWaveform() {
 }
 
 // ============================================================
-// Recording
+// Recording  (MediaRecorder + Gemini transcription)
 // ============================================================
 async function startRecording() {
-  if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
-    toast('このブラウザは音声認識をサポートしていません。Chrome または Edge を使用してください。', 'error');
-    return;
-  }
-
-  // マイク許可確認（波形は使わず、音声認識に専念させる）
   try {
     setRecStatus('connecting', 'マイク接続中...');
-    // 許可確認のみ取得してすぐ解放 → 音声認識が独占使用できるようにする
-    const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    testStream.getTracks().forEach(t => t.stop());
-    micPermissionGranted = true;
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     setRecStatus('idle', '待機中');
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      toast('マイクへのアクセスが拒否されました。ブラウザのアドレスバー左の🔒アイコン → マイク → 許可 に変更してください。', 'error');
+      toast('マイクへのアクセスが拒否されました。ブラウザの設定からマイクを許可してください。', 'error');
     } else {
       toast(`マイクエラー: ${err.message}`, 'error');
     }
     return;
   }
 
+  // 波形用 AudioContext（iOS は suspended 状態で生成されるため resume 必須）
+  try {
+    audioContext = new AudioContext();
+    if (audioContext.state === 'suspended') await audioContext.resume();
+    analyser = audioContext.createAnalyser();
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    source.connect(analyser);
+  } catch (e) {
+    // AudioContext が使えなくても録音自体は続行（波形表示のみ無効）
+    audioContext = null;
+    analyser = null;
+  }
+
+  audioChunks = [];
+  // iOS Safari は audio/mp4 のみ対応。WebM → MP4 の順で試みる
+  const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4'];
+  const mimeType = preferredTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  if (!mimeType) {
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    setRecStatus('idle', '待機中');
+    toast('このブラウザは録音に対応していません', 'error');
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnPause').disabled = true;
+    document.getElementById('btnStop').disabled = true;
+    return;
+  }
+  mediaRecorder = new MediaRecorder(mediaStream, { mimeType });
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(audioChunks, { type: mimeType });
+    transcribeWithGemini(blob, mimeType);
+  };
+  mediaRecorder.onerror = (e) => {
+    toast(`録音エラー: ${e.error?.message || '不明なエラー'}`, 'error');
+    stopRecording();
+  };
+  // iOS Safari では timeslice 引数が不安定なため省略（stop 時に一括取得）
+  mediaRecorder.start();
+
   isRecording = true;
   isPaused = false;
-  errorCount = 0;
-
   document.getElementById('btnStart').disabled = true;
   document.getElementById('btnPause').disabled = false;
   document.getElementById('btnStop').disabled = false;
 
   startTimer();
-  startRecognition();
+  drawWaveform();
+  setRecStatus('active', '録音中');
   toast('録音を開始しました', 'success');
-}
-
-function startRecognition() {
-  if (!isRecording || isPaused) return;
-
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SR();
-  recognition.lang = document.getElementById('recLang').value;
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-
-  // 結果受信 ─ UIは変えない
-  recognition.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i].transcript;
-      if (e.results[i].isFinal) {
-        finalTranscript += t;
-        updateTranscriptArea();
-        document.getElementById('interimText').textContent = '';
-      } else {
-        document.getElementById('interimText').textContent = `▶ ${t}`;
-      }
-    }
-    updateCharCount();
-  };
-
-  // エラー処理
-  recognition.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      toast('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。', 'error');
-      stopRecording();
-    }
-    // no-speech / network / aborted は onend で自動再起動するため無視
-  };
-
-  // 終了 → 新しいインスタンスで確実に再起動（サイレント）
-  recognition.onend = () => {
-    if (!isRecording || isPaused) return;
-    clearTimeout(restartTimer);
-    restartTimer = setTimeout(() => {
-      if (isRecording && !isPaused) startRecognition();
-    }, 150);
-  };
-
-  try {
-    recognition.start();
-    setRecStatus('active', '録音中');
-  } catch(e) {
-    toast('音声認識の起動に失敗しました。ページを再読み込みしてください。', 'error');
-  }
 }
 
 function pauseRecording() {
   if (!isRecording) return;
   if (!isPaused) {
     isPaused = true;
-    clearTimeout(restartTimer);
-    if (recognition) { try { recognition.stop(); } catch(e){} }
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause();
     stopTimer();
     setRecStatus('paused', '一時停止中');
     document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> 再開`;
   } else {
     isPaused = false;
-    errorCount = 0;
+    if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume();
     startTimer();
-    startRecognition();
+    setRecStatus('active', '録音中');
     document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
   }
 }
@@ -739,8 +726,9 @@ function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   isPaused = false;
-  clearTimeout(restartTimer);
-  if (recognition) { try { recognition.abort(); } catch(e){} recognition = null; }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; analyser = null; }
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
   stopTimer();
 
@@ -748,11 +736,75 @@ function stopRecording() {
   document.getElementById('btnPause').disabled = true;
   document.getElementById('btnStop').disabled = true;
   document.getElementById('btnPause').innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 一時停止`;
-  document.getElementById('interimText').textContent = '';
-  setRecStatus('done', '録音完了');
+  setRecStatus('done', '文字起こし中...');
   drawIdleWaveform();
-  toast('録音を停止しました', 'success');
-  updateCharCount();
+  toast('録音停止。Geminiで文字起こし中...', 'success');
+}
+
+// ============================================================
+// Gemini 文字起こし
+// ============================================================
+async function transcribeWithGemini(blob, mimeType) {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) {
+    document.getElementById('interimText').textContent = '※ Gemini APIキーを設定すると自動で文字起こしされます。';
+    setRecStatus('done', '録音完了');
+    return;
+  }
+
+  isTranscribing = true;
+  document.getElementById('interimText').textContent = '文字起こし中...';
+
+  try {
+    // Blob → base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    const lang = document.getElementById('recLang').value;
+    const langHint = lang.startsWith('ja') ? '日本語' : lang.startsWith('zh') ? '中国語' : lang.startsWith('ko') ? '韓国語' : '英語';
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inline_data: { mime_type: mimeType.split(';')[0], data: base64 } },
+              { text: `この音声を${langHint}でそのまま文字起こしてください。話された言葉をできる限り正確に書き起こしてください。余計な説明や注釈は不要です。` }
+            ]
+          }]
+        })
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (text) {
+      finalTranscript += (finalTranscript ? '\n' : '') + text.trim();
+      updateTranscriptArea();
+      updateCharCount();
+      toast('文字起こし完了', 'success');
+    } else {
+      toast('文字起こし結果が空でした', 'warning');
+    }
+  } catch (e) {
+    toast(`文字起こしエラー: ${e.message}`, 'error');
+  } finally {
+    isTranscribing = false;
+    document.getElementById('interimText').textContent = '';
+    setRecStatus('done', '録音完了');
+  }
 }
 
 // ステータス表示ヘルパー
@@ -801,11 +853,11 @@ function copyTranscript() {
 }
 
 // ============================================================
-// Summarize via Claude API
+// Summarize via Gemini API
 // ============================================================
 async function summarize() {
   const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey) { toast('Claude APIキーを入力してください', 'error'); return; }
+  if (!apiKey) { toast('Gemini APIキーを入力してください', 'error'); return; }
 
   const transcript = document.getElementById('transcript').value.trim();
   if (!transcript) { toast('文字起こしが空です。録音または手動入力してください', 'warning'); return; }
@@ -878,34 +930,31 @@ Note: List action items after "---ACTIONS---" separator, one per line.
 (Owner): (Task)`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-calls': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2048,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
-      })
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ parts: [{ text: userPrompt }] }],
+          generationConfig: { maxOutputTokens: 2048 }
+        })
+      }
+    );
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
       const msg = errBody.error?.message || `HTTP ${res.status}`;
-      if (res.status === 401) throw new Error('APIキーが無効です。正しいClaude APIキー（sk-ant-...）を入力してください。');
-      if (res.status === 403) throw new Error('APIキーの権限がありません。');
+      if (res.status === 400) throw new Error('APIキーが無効です。正しいGemini APIキー（AIza...）を入力してください。');
+      if (res.status === 403) throw new Error('APIキーの権限がありません。Google AI StudioでAPIキーを確認してください。');
       if (res.status === 429) throw new Error('APIの利用制限に達しました。しばらく待ってから再試行してください。');
       throw new Error(msg);
     }
 
     const data = await res.json();
-    if (!data.content || !data.content[0]) throw new Error('APIからの応答が空です。');
-    const text = data.content[0].text;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('APIからの応答が空です。');
 
     // Split summary and action items
     const parts = text.split('---ACTIONS---');
